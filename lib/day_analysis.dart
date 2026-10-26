@@ -39,6 +39,19 @@ class GapLine {
   double get meters => DayAnalysis.meters(from, to);
   Duration get duration => to.time.difference(from.time);
 
+  /// The agent really travelled across this stretch (counted as a straight
+  /// line): points missed on the way, or a long gap within one shift that
+  /// covers real distance (underground metro, tunnel, phone not sending)
+  /// rather than GPS paused while standing still.
+  bool get travelled {
+    if (!noLocations) return true;
+    if (from.shiftId.isNotEmpty && to.shiftId.isNotEmpty && from.shiftId != to.shiftId) {
+      return false;
+    }
+    final kmh = meters / duration.inSeconds.clamp(1, 1 << 30) * 3.6;
+    return meters >= 300 && kmh >= 5;
+  }
+
   static String _reason(Fix a, Fix b, bool noLocations) {
     final d = DayAnalysis.meters(a, b);
     final dt = b.time.difference(a.time).inMilliseconds / 1000;
@@ -52,12 +65,21 @@ class GapLine {
         a.shiftId != b.shiftId) {
       return 'Duty off between shifts';
     }
+    final kmhAll = dt > 0 ? d / dt * 3.6 : 0;
     if (noLocations) {
       if (d < 150) return 'Standing still: GPS paused to save battery (normal)';
+      if (d >= 300 && kmhAll >= 15) {
+        return 'No GPS while travelling (underground metro / tunnel) — straight line counted';
+      }
       if (weak) return 'Weak GPS signal (indoors / covered area)';
       return 'Phone stopped sending: Location off, app closed by the phone, or no signal';
     }
     if (weak) return 'Weak GPS: points dropped';
+    // Builds before 26 Oct dropped fixes worse than 15 m while moving slowly
+    // (phones with weak GPS such as vivo V2060).
+    if (a.accuracy > 15 || b.accuracy > 15) {
+      return 'Weak GPS (accuracy over 15 m): points dropped by the old app';
+    }
     final kmh = dt > 0 ? d / dt * 3.6 : double.infinity;
     if (kmh > kJumpKmh) return 'GPS jump (impossible speed)';
     // Builds before 25 Oct dropped every fix above 130 km/h (expressways).
@@ -79,6 +101,7 @@ class DayItem {
     this.lat,
     this.lng,
     this.reason,
+    this.travelled = false,
   });
 
   final ItemKind kind;
@@ -93,6 +116,9 @@ class DayItem {
 
   /// Gaps and missed stretches: why the route was not recorded.
   final String? reason;
+
+  /// Gaps: the straight line across counts as travelled.
+  final bool travelled;
 
   Duration get duration => end.difference(start);
 }
@@ -124,7 +150,7 @@ class DayAnalysis {
       }
     }
     for (final g in gapLines) {
-      if (!g.noLocations) m += meters(g.from, g.to);
+      if (g.travelled) m += meters(g.from, g.to);
     }
     return m;
   }
@@ -136,11 +162,11 @@ class DayAnalysis {
       .where((i) => i.kind == ItemKind.trip)
       .fold(Duration.zero, (d, i) => d + i.duration);
 
-  /// Straight-line distance across gaps (no points stored, e.g. GPS off):
-  /// not counted as travelled, shown separately.
-  double get gapMeters => items
-      .where((i) => i.kind == ItemKind.gap)
-      .fold(0.0, (m, i) => m + i.meters);
+  /// Part of the total that is a straight line across stretches without GPS
+  /// (underground metro, tunnels, missed points): the real path was longer.
+  double get noGpsMeters => gapLines
+      .where((g) => g.travelled)
+      .fold(0.0, (m, g) => m + g.meters);
 
   int get noLocationCount => gapLines.where((g) => g.noLocations).length;
 
@@ -193,6 +219,7 @@ class DayAnalysis {
             g.to.time,
             meters: g.meters,
             reason: g.reason,
+            travelled: g.travelled,
           ),
         );
       }

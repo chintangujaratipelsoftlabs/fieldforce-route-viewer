@@ -486,8 +486,8 @@ class _ViewerPageState extends State<ViewerPage> {
           Text(
             [
               '${_dur(day.movingTime)} moving',
-              if (day.gapMeters >= 50)
-                '+${_km(day.gapMeters)} across gaps (not tracked)',
+              if (day.noGpsMeters >= 50)
+                'incl. ${_km(day.noGpsMeters)} without GPS (straight line)',
             ].join(' · '),
             style: TextStyle(color: Colors.grey.shade400, fontSize: 11.5),
           ),
@@ -678,7 +678,7 @@ class _ViewerPageState extends State<ViewerPage> {
       ItemKind.gap => (
         'No locations',
         Colors.redAccent.shade200,
-        '${it.reason} — ${_dur(it.duration)} without a point, ${_km(it.meters)} straight line (not counted)',
+        '${it.reason} — ${_dur(it.duration)} without a point, ${_km(it.meters)} straight line (${it.travelled ? 'counted' : 'not counted'})',
       ),
       ItemKind.missed => (
         'Route missed',
