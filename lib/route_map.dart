@@ -19,9 +19,8 @@ const _stop = Color(0xFF12A594);
 
 /// Title shown at the middle of a dotted (not recorded) stretch.
 String gapTitle(GapLine g) {
-  final d = g.meters >= 1000
-      ? '${(g.meters / 1000).toStringAsFixed(1)} km'
-      : '${g.meters.round()} m';
+  final m = g.countedMeters;
+  final d = m >= 1000 ? '${(m / 1000).toStringAsFixed(1)} km' : '${m.round()} m';
   final t = g.duration.inMinutes > 0
       ? '${g.duration.inMinutes} min'
       : '${g.duration.inSeconds} s';
@@ -152,7 +151,7 @@ class _GoogleRouteMapState extends State<_GoogleRouteMap> {
         polylines.add(
           gm.Polyline(
             polylineId: gm.PolylineId('gap$i'),
-            points: [_p(g.from), _p(g.to)],
+            points: [for (final (a, b) in g.path) gm.LatLng(a, b)],
             color: g.noLocations ? _gap : _missed,
             width: 4,
             jointType: gm.JointType.round,
@@ -365,7 +364,7 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
                 polylines: [
                   for (final g in day.gapLines)
                     fm.Polyline(
-                      points: [_p(g.from), _p(g.to)],
+                      points: [for (final (a, b) in g.path) ll.LatLng(a, b)],
                       color: g.noLocations ? _gap : _missed,
                       strokeWidth: 3.5,
                       pattern: const fm.StrokePattern.dotted(spacingFactor: 2),
@@ -381,8 +380,8 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
               for (final g in day.gapLines)
                 fm.CircleMarker(
                   point: ll.LatLng(
-                    (g.from.lat + g.to.lat) / 2,
-                    (g.from.lng + g.to.lng) / 2,
+                    g.path[g.path.length ~/ 2].$1,
+                    g.path[g.path.length ~/ 2].$2,
                   ),
                   radius: 4,
                   color: g.noLocations ? _gap : _missed,

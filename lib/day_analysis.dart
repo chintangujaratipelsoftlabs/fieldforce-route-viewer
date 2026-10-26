@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'firestore_api.dart';
+import 'rail_route.dart';
 
 /// Points within this distance of a place for at least [kStopMinDuration]
 /// are a stop, not travel.
@@ -23,20 +24,44 @@ enum ItemKind { stop, trip, gap, missed }
 
 /// A stretch the phone did not record, drawn as a dotted line.
 class GapLine {
-  GapLine(this.from, this.to, this.noLocations)
-    : reason = _reason(from, to, noLocations);
+  GapLine(this.from, this.to, this.noLocations, [RailNetwork? rail])
+    : ride = _sameShift(from, to)
+          ? rail?.routeGap(
+              from.lat,
+              from.lng,
+              from.time.millisecondsSinceEpoch,
+              to.lat,
+              to.lng,
+              to.time.millisecondsSinceEpoch,
+            )
+          : null {
+    reason = ride != null ? _rideReason(ride!) : _reason(from, to, noLocations);
+  }
 
   final Fix from;
   final Fix to;
+
+  /// No GPS while riding a metro / train (underground): measured along the
+  /// line, the same way the app counts it.
+  final RailRoute? ride;
 
   /// True: nothing stored for over [kGapMin]. False: points missed on the way.
   final bool noLocations;
 
   /// Why the route was not recorded, inferred from the points either side
   /// (the phone's own status log is not uploaded).
-  final String reason;
+  late final String reason;
 
+  /// Straight line between the two points.
   double get meters => DayAnalysis.meters(from, to);
+
+  /// Counted for this stretch: along the line for a ride.
+  double get countedMeters => ride?.meters ?? meters;
+
+  /// Drawn dotted: along the line for a ride, else straight.
+  List<(double, double)> get path =>
+      ride?.path ?? [(from.lat, from.lng), (to.lat, to.lng)];
+
   Duration get duration => to.time.difference(from.time);
 
   /// The agent really travelled across this stretch (counted as a straight
@@ -44,13 +69,20 @@ class GapLine {
   /// covers real distance (underground metro, tunnel, phone not sending)
   /// rather than GPS paused while standing still.
   bool get travelled {
-    if (!noLocations) return true;
-    if (from.shiftId.isNotEmpty && to.shiftId.isNotEmpty && from.shiftId != to.shiftId) {
-      return false;
-    }
+    if (!noLocations || ride != null) return true;
+    if (!_sameShift(from, to)) return false;
     final kmh = meters / duration.inSeconds.clamp(1, 1 << 30) * 3.6;
     return meters >= 300 && kmh >= 5;
   }
+
+  static bool _sameShift(Fix a, Fix b) =>
+      a.shiftId.isEmpty || b.shiftId.isEmpty || a.shiftId == b.shiftId;
+
+  static String _rideReason(RailRoute r) =>
+      'No GPS while riding (underground ${r.metro ? 'metro' : 'train'} / '
+      'tunnel) — ${(r.meters / 1000).toStringAsFixed(2)} km counted along the '
+      '${r.metro ? 'metro' : 'train'} line (straight line '
+      '${(r.straight / 1000).toStringAsFixed(2)} km)';
 
   static String _reason(Fix a, Fix b, bool noLocations) {
     final d = DayAnalysis.meters(a, b);
@@ -150,7 +182,7 @@ class DayAnalysis {
       }
     }
     for (final g in gapLines) {
-      if (g.travelled) m += meters(g.from, g.to);
+      if (g.travelled) m += g.countedMeters;
     }
     return m;
   }
@@ -162,11 +194,15 @@ class DayAnalysis {
       .where((i) => i.kind == ItemKind.trip)
       .fold(Duration.zero, (d, i) => d + i.duration);
 
-  /// Part of the total that is a straight line across stretches without GPS
-  /// (underground metro, tunnels, missed points): the real path was longer.
+  /// Part of the total across stretches without GPS (underground metro,
+  /// tunnels, missed points): along the line for rides, else straight.
   double get noGpsMeters => gapLines
       .where((g) => g.travelled)
-      .fold(0.0, (m, g) => m + g.meters);
+      .fold(0.0, (m, g) => m + g.countedMeters);
+
+  /// Part of [noGpsMeters] measured along metro / train lines.
+  double get railMeters =>
+      gapLines.fold(0.0, (m, g) => m + (g.ride?.meters ?? 0));
 
   int get noLocationCount => gapLines.where((g) => g.noLocations).length;
 
@@ -190,7 +226,9 @@ class DayAnalysis {
     return n;
   }
 
-  static DayAnalysis of(List<Fix> fixes) {
+  /// [rail]: metro / train lines, to measure underground rides (null:
+  /// straight lines).
+  static DayAnalysis of(List<Fix> fixes, {RailNetwork? rail}) {
     final segments = <List<Fix>>[];
     final gapLines = <GapLine>[];
     var run = <Fix>[];
@@ -199,7 +237,7 @@ class DayAnalysis {
         final noLocations = f.time.difference(run.last.time) > kGapMin;
         final missed = meters(run.last, f) > kMissMeters;
         if (noLocations || missed) {
-          gapLines.add(GapLine(run.last, f, noLocations));
+          gapLines.add(GapLine(run.last, f, noLocations, rail));
           segments.add(run);
           run = [];
         }
@@ -217,7 +255,7 @@ class DayAnalysis {
             g.noLocations ? ItemKind.gap : ItemKind.missed,
             g.from.time,
             g.to.time,
-            meters: g.meters,
+            meters: g.countedMeters,
             reason: g.reason,
             travelled: g.travelled,
           ),

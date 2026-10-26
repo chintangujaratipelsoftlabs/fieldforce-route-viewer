@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 
 import 'config.dart';
 import 'day_analysis.dart';
 import 'firestore_api.dart';
+import 'rail_route.dart';
 import 'route_map.dart';
 
 final _hm = DateFormat('HH:mm');
@@ -141,8 +143,9 @@ class _ViewerPageState extends State<ViewerPage> {
     });
     try {
       final fixes = await _api.locations(user.userId, _start, _end);
+      final rail = await _railNetwork();
       setState(() {
-        _dayData = DayAnalysis.of(fixes);
+        _dayData = DayAnalysis.of(fixes, rail: rail);
         _pinnedGap = null;
         _index = 0;
         _fitTick++;
@@ -486,8 +489,10 @@ class _ViewerPageState extends State<ViewerPage> {
           Text(
             [
               '${_dur(day.movingTime)} moving',
-              if (day.noGpsMeters >= 50)
-                'incl. ${_km(day.noGpsMeters)} without GPS (straight line)',
+              if (day.railMeters >= 50)
+                'incl. ${_km(day.railMeters)} underground ride along the line (estimated)',
+              if (day.noGpsMeters - day.railMeters >= 50)
+                'incl. ${_km(day.noGpsMeters - day.railMeters)} without GPS (straight line)',
             ].join(' · '),
             style: TextStyle(color: Colors.grey.shade400, fontSize: 11.5),
           ),
@@ -678,7 +683,7 @@ class _ViewerPageState extends State<ViewerPage> {
       ItemKind.gap => (
         'No locations',
         Colors.redAccent.shade200,
-        '${it.reason} — ${_dur(it.duration)} without a point, ${_km(it.meters)} straight line (${it.travelled ? 'counted' : 'not counted'})',
+        '${it.reason} — ${_dur(it.duration)} without a point, ${_km(it.meters)} (${it.travelled ? 'counted' : 'not counted'})',
       ),
       ItemKind.missed => (
         'Route missed',
@@ -814,3 +819,17 @@ extension on TimeOfDay {
   String get format24 =>
       '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
 }
+
+Future<RailNetwork?>? _rail;
+
+/// India's metro / train lines (published next to the viewer, the same file
+/// the app uses), loaded once. Without them gaps stay straight lines.
+Future<RailNetwork?> _railNetwork() => _rail ??= () async {
+  try {
+    final r = await http.get(Uri.base.resolve('rail/india_rail.json'));
+    if (r.statusCode != 200) return null;
+    return RailNetwork.parse(r.body);
+  } catch (_) {
+    return null;
+  }
+}();
