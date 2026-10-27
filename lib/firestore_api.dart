@@ -48,6 +48,24 @@ class Fix {
   final String shiftId;
 }
 
+/// Underground position estimate (no GPS: the phone estimated where the
+/// agent is along the metro line). Not a route point, never counted.
+class Estimate {
+  const Estimate({
+    required this.time,
+    required this.lat,
+    required this.lng,
+    required this.sigma,
+    this.station,
+  });
+
+  final DateTime time;
+  final double lat;
+  final double lng;
+  final double sigma;
+  final String? station;
+}
+
 /// Who is signed in to the viewer.
 class Session {
   const Session(this.api, {required this.isAdmin, this.self});
@@ -244,6 +262,53 @@ class FirestoreApi {
       );
     }
     return out;
+  }
+
+  /// Underground estimates of [userId] between [from] and [to] (only when
+  /// the direction along the line was known), oldest first.
+  Future<List<Estimate>> estimates(
+    String userId,
+    DateTime from,
+    DateTime to,
+  ) async {
+    final rows = await _send('POST', '$_base/users/$userId:runQuery', {
+      'structuredQuery': {
+        'from': [
+          {'collectionId': 'estimates'},
+        ],
+        'where': {
+          'compositeFilter': {
+            'op': 'AND',
+            'filters': [
+              _range('GREATER_THAN_OR_EQUAL', from),
+              _range('LESS_THAN_OR_EQUAL', to),
+            ],
+          },
+        },
+        'orderBy': [
+          {
+            'field': {'fieldPath': 'timestamp'},
+            'direction': 'ASCENDING',
+          },
+        ],
+      },
+    }) as List;
+    return [
+      for (final row in rows)
+        if ((row as Map<String, dynamic>)['document'] case final doc?)
+          if (_fields(doc) case final f
+              when f['directionKnown'] == true &&
+                  f['timestamp'] is DateTime &&
+                  f['latitude'] is num &&
+                  f['longitude'] is num)
+            Estimate(
+              time: (f['timestamp'] as DateTime).toLocal(),
+              lat: (f['latitude'] as num).toDouble(),
+              lng: (f['longitude'] as num).toDouble(),
+              sigma: (f['sigma'] as num?)?.toDouble() ?? 0,
+              station: f['station'] as String?,
+            ),
+    ];
   }
 
   /// Time of the user's most recent stored location, if any.

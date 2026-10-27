@@ -49,3 +49,6 @@ app.*.map.json
 
 # Local developer credentials (never commit)
 dev_config.json
+
+# World rail tiles (built by ../tools/build_rail.py, published to gh-pages only)
+web/rail/tiles/

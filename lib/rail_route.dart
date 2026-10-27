@@ -58,15 +58,64 @@ class RailRoute {
   final bool metro;
 }
 
+/// A named station near a line.
+class RailStation {
+  const RailStation(this.lat, this.lng, this.name, this.metro);
+
+  final double lat;
+  final double lng;
+  final String name;
+  final bool metro;
+}
+
+/// The line through a point, followed both ways from it (underground
+/// position estimate, underground_kalman.dart).
+class RailLineAt {
+  const RailLineAt(this.snapMeters, this.metro, this.ahead, this.back);
+
+  /// From the point to the line.
+  final double snapMeters;
+  final bool metro;
+
+  /// From the point on the line onward in each direction (lat, lng).
+  final List<(double, double)> ahead;
+  final List<(double, double)> back;
+}
+
 /// The metro and train lines of a country (OpenStreetMap), as built by
 /// tools/build_rail.py: `{"v":1,"built":"…","lines":[{"m":0|1,
-/// "b":[minLat,minLng,maxLat,maxLng],"p":[lat,lng,dLat,dLng,…]}]}`, all in
-/// 1e-5 degrees, m 0 = metro, 1 = train.
+/// "b":[minLat,minLng,maxLat,maxLng],"p":[lat,lng,dLat,dLng,…]}],
+/// "st":[[lat,lng,"name",m],…]}`, all in 1e-5 degrees, m 0 = metro,
+/// 1 = train. Built as 1-degree tiles ("28_77"); a file holds one tile or
+/// several ([tiles]), and files are combined with [merge].
 class RailNetwork {
-  RailNetwork._(this.built, this._lines);
+  RailNetwork._(this.built, this._lines, this.stations, this.tiles);
 
   final String built;
   final List<_Line> _lines;
+  final List<RailStation> stations;
+
+  /// The tiles this network covers.
+  final Set<String> tiles;
+
+  /// One network of several files (the bundled country plus downloaded
+  /// tiles). A file whose tiles are all covered already is skipped.
+  static RailNetwork merge(List<RailNetwork> parts) {
+    final lines = <_Line>[], stations = <RailStation>[], tiles = <String>{};
+    var built = '';
+    for (final p in parts) {
+      if (p.tiles.isNotEmpty && tiles.containsAll(p.tiles)) continue;
+      lines.addAll(p._lines);
+      stations.addAll(p.stations);
+      tiles.addAll(p.tiles);
+      if (p.built.compareTo(built) > 0) built = p.built;
+    }
+    return RailNetwork._(built, lines, stations, tiles);
+  }
+
+  /// The 1-degree tile of a point, as named in the files.
+  static String tileOf(double lat, double lng) =>
+      '${lat.floor()}_${lng.floor()}';
   final Map<String, RailRoute?> _cache = {};
 
   int get lineCount => _lines.length;
@@ -97,7 +146,138 @@ class RailNetwork {
         lng,
       ));
     }
-    return RailNetwork._('${d['built'] ?? ''}', lines);
+    final stations = [
+      for (final st in (d['st'] as List? ?? const []))
+        RailStation(
+          (st[0] as int) / 1e5,
+          (st[1] as int) / 1e5,
+          st[2] as String,
+          st[3] == 0,
+        ),
+    ];
+    return RailNetwork._('${d['built'] ?? ''}', lines, stations,
+        {for (final t in (d['tiles'] as List? ?? const [])) '$t'});
+  }
+
+  /// Stations within [meters] of (lat, lng).
+  List<RailStation> stationsNear(double lat, double lng, double meters) {
+    final dLat = meters / 111000;
+    final dLng = dLat / math.cos(lat * math.pi / 180);
+    return [
+      for (final st in stations)
+        if ((st.lat - lat).abs() <= dLat &&
+            (st.lng - lng).abs() <= dLng &&
+            railHaversine(lat, lng, st.lat, st.lng) <= meters)
+          st,
+    ];
+  }
+
+  /// The line nearest to (lat, lng) within [snapMeters] (a metro line wins
+  /// over a train line), followed up to [maxMeters] both ways. Where the line
+  /// ends at a junction, it continues on the straightest line of the same
+  /// kind (a train keeps going straight through a junction more often than
+  /// not; the estimate is corrected at stations and by any fix).
+  RailLineAt? lineAt(double lat, double lng,
+      {double snapMeters = 300, double maxMeters = 40000}) {
+    final dLat = snapMeters / 111000;
+    final dLng = dLat / math.cos(lat * math.pi / 180);
+    final k = math.cos(lat * math.pi / 180);
+    (double, int, int, double, double)? best; // dist, line, segment, lat, lng
+    for (var li = 0; li < _lines.length; li++) {
+      final l = _lines[li];
+      if (l.maxLat < lat - dLat ||
+          l.minLat > lat + dLat ||
+          l.maxLng < lng - dLng ||
+          l.minLng > lng + dLng) {
+        continue;
+      }
+      for (var i = 1; i < l.lat.length; i++) {
+        final aLat = l.lat[i - 1] / 1e5, aLng = l.lng[i - 1] / 1e5;
+        final bLat = l.lat[i] / 1e5, bLng = l.lng[i] / 1e5;
+        final ax = (aLng - lng) * k, ay = aLat - lat;
+        final dx = (bLng - aLng) * k, dy = bLat - aLat;
+        final len = dx * dx + dy * dy;
+        final t = len == 0 ? 0.0 : (-(ax * dx + ay * dy) / len).clamp(0.0, 1.0);
+        final pLat = aLat + t * (bLat - aLat), pLng = aLng + t * (bLng - aLng);
+        // Metro first: a train line within the snap distance only wins when
+        // no metro line is.
+        final d = railHaversine(lat, lng, pLat, pLng) + (l.metro ? 0 : 1e6);
+        if (best == null || d < best.$1) best = (d, li, i, pLat, pLng);
+      }
+    }
+    if (best == null || best.$1 % 1e6 > snapMeters) return null;
+    final (d, li, seg, pLat, pLng) = best;
+    final metro = _lines[li].metro;
+    return RailLineAt(
+      d % 1e6,
+      metro,
+      _follow(li, seg, true, pLat, pLng, maxMeters),
+      _follow(li, seg - 1, false, pLat, pLng, maxMeters),
+    );
+  }
+
+  /// Points from (lat, lng) along line [li] from point [i] on, forward or
+  /// backward, then on across junctions, until [maxMeters].
+  List<(double, double)> _follow(
+      int li, int i, bool forward, double lat, double lng, double maxMeters) {
+    final out = <(double, double)>[(lat, lng)];
+    var total = 0.0;
+    final used = {li};
+    var line = _lines[li];
+    while (true) {
+      while (i >= 0 && i < line.lat.length) {
+        final p = (line.lat[i] / 1e5, line.lng[i] / 1e5);
+        total += railHaversine(out.last.$1, out.last.$2, p.$1, p.$2);
+        out.add(p);
+        if (total >= maxMeters) return out;
+        i += forward ? 1 : -1;
+      }
+      // End of this line: continue on the straightest line through here,
+      // from its end or from a point along it (OSM tracks often end where
+      // they join another track partway).
+      if (out.length < 2) return out;
+      final end = out.last, before = out[out.length - 2];
+      final heading = _bearing(before, end);
+      (double, int, bool, int)? next; // turn, line, forward, from index
+      for (var lj = 0; lj < _lines.length; lj++) {
+        final c = _lines[lj];
+        if (used.contains(lj) || c.metro != line.metro) continue;
+        if (c.maxLat < end.$1 - 0.001 ||
+            c.minLat > end.$1 + 0.001 ||
+            c.maxLng < end.$2 - 0.001 ||
+            c.minLng > end.$2 + 0.001) {
+          continue;
+        }
+        for (var k = 0; k < c.lat.length; k++) {
+          final at = (c.lat[k] / 1e5, c.lng[k] / 1e5);
+          if (railHaversine(at.$1, at.$2, end.$1, end.$2) > 15) continue;
+          for (final fwd in [true, false]) {
+            final n = fwd ? k + 1 : k - 1;
+            if (n < 0 || n >= c.lat.length) continue;
+            final turn =
+                _turn(heading, _bearing(at, (c.lat[n] / 1e5, c.lng[n] / 1e5)));
+            if (turn < 60 && (next == null || turn < next.$1)) {
+              next = (turn, lj, fwd, n);
+            }
+          }
+        }
+      }
+      if (next == null) return out;
+      used.add(next.$2);
+      line = _lines[next.$2];
+      forward = next.$3;
+      i = next.$4;
+    }
+  }
+
+  static double _bearing((double, double) a, (double, double) b) =>
+      math.atan2((b.$2 - a.$2) * math.cos(a.$1 * math.pi / 180), b.$1 - a.$1) *
+      180 /
+      math.pi;
+
+  static double _turn(double a, double b) {
+    final d = (a - b).abs() % 360;
+    return d > 180 ? 360 - d : d;
   }
 
   /// The ride across a GPS gap from (lat1, lng1) at [ms1] to (lat2, lng2) at

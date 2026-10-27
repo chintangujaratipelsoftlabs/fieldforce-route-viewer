@@ -156,9 +156,13 @@ class DayItem {
 }
 
 class DayAnalysis {
-  DayAnalysis(this.fixes, this.items, this.segments, this.gapLines);
+  DayAnalysis(this.fixes, this.items, this.segments, this.gapLines,
+      [this.estimates = const []]);
 
   final List<Fix> fixes;
+
+  /// Underground position estimates (shown, never counted).
+  final List<Estimate> estimates;
   final List<DayItem> items;
 
   /// Runs of fixes without a gap, drawn as solid lines.
@@ -228,7 +232,11 @@ class DayAnalysis {
 
   /// [rail]: metro / train lines, to measure underground rides (null:
   /// straight lines).
-  static DayAnalysis of(List<Fix> fixes, {RailNetwork? rail}) {
+  static DayAnalysis of(
+    List<Fix> fixes, {
+    RailNetwork? rail,
+    List<Estimate> estimates = const [],
+  }) {
     final segments = <List<Fix>>[];
     final gapLines = <GapLine>[];
     var run = <Fix>[];
@@ -263,7 +271,7 @@ class DayAnalysis {
       }
       items.addAll(_stopsAndTrips(segments[s]));
     }
-    return DayAnalysis(fixes, items, segments, gapLines);
+    return DayAnalysis(fixes, items, segments, gapLines, estimates);
   }
 
   static List<DayItem> _stopsAndTrips(List<Fix> run) {

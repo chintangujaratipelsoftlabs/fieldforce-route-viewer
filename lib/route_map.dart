@@ -27,6 +27,25 @@ String gapTitle(GapLine g) {
   return g.noLocations ? 'No locations · $t · $d' : 'Route missed · $d in $t';
 }
 
+String estimateLabel(Estimate e) =>
+    'Underground estimate ${_hm.format(e.time)}'
+    '${e.station != null ? ' · near ${e.station}' : ''} '
+    '(±${e.sigma.round()} m, no GPS — not counted)';
+
+/// Underground estimate: hollow purple dot.
+class _EstimateDot extends StatelessWidget {
+  const _EstimateDot();
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      color: Colors.white.withValues(alpha: .85),
+      border: Border.all(color: Colors.deepPurpleAccent, width: 3),
+    ),
+  );
+}
+
 String stopLabel(DayItem s) {
   // A stop running past midnight shows its dates.
   final f = DateUtils.isSameDay(s.start, s.end)
@@ -159,6 +178,18 @@ class _GoogleRouteMapState extends State<_GoogleRouteMap> {
             // Google Maps has no hover: a click shows the reason.
             consumeTapEvents: true,
             onTap: () => widget.onGapTap(g),
+          ),
+        );
+      }
+      for (final (i, e) in day.estimates.indexed) {
+        circles.add(
+          gm.Circle(
+            circleId: gm.CircleId('est$i'),
+            center: gm.LatLng(e.lat, e.lng),
+            radius: 25,
+            strokeWidth: 3,
+            strokeColor: Colors.deepPurpleAccent,
+            fillColor: Colors.white70,
           ),
         );
       }
@@ -400,6 +431,21 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
                   color: f.mock ? Colors.orange : _route,
                   borderColor: Colors.white,
                   borderStrokeWidth: 1,
+                ),
+            ],
+          ),
+        if (has && day.estimates.isNotEmpty)
+          fm.MarkerLayer(
+            markers: [
+              for (final e in day.estimates)
+                fm.Marker(
+                  point: ll.LatLng(e.lat, e.lng),
+                  width: 16,
+                  height: 16,
+                  child: Tooltip(
+                    message: estimateLabel(e),
+                    child: const _EstimateDot(),
+                  ),
                 ),
             ],
           ),

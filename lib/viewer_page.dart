@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -143,9 +144,12 @@ class _ViewerPageState extends State<ViewerPage> {
     });
     try {
       final fixes = await _api.locations(user.userId, _start, _end);
-      final rail = await _railNetwork();
+      final rail = await _railNetwork(fixes);
+      final estimates = await _api
+          .estimates(user.userId, _start, _end)
+          .catchError((Object _) => <Estimate>[]);
       setState(() {
-        _dayData = DayAnalysis.of(fixes, rail: rail);
+        _dayData = DayAnalysis.of(fixes, rail: rail, estimates: estimates);
         _pinnedGap = null;
         _index = 0;
         _fitTick++;
@@ -820,16 +824,43 @@ extension on TimeOfDay {
       '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
 }
 
-Future<RailNetwork?>? _rail;
+/// Metro / train line tiles published next to the viewer (the same ones the
+/// app downloads), loaded once each.
+Future<Map<String, dynamic>?>? _railIndex;
+final _railTiles = <String, Future<RailNetwork?>>{};
 
-/// India's metro / train lines (published next to the viewer, the same file
-/// the app uses), loaded once. Without them gaps stay straight lines.
-Future<RailNetwork?> _railNetwork() => _rail ??= () async {
-  try {
-    final r = await http.get(Uri.base.resolve('rail/india_rail.json'));
-    if (r.statusCode != 200) return null;
-    return RailNetwork.parse(r.body);
-  } catch (_) {
-    return null;
+/// The lines around [fixes] (their tiles and the ones next to them),
+/// anywhere in the world. Null without any: gaps stay straight lines.
+Future<RailNetwork?> _railNetwork(List<Fix> fixes) async {
+  _railIndex ??= () async {
+    try {
+      final r = await http.get(Uri.base.resolve('rail/tiles/index.json'));
+      if (r.statusCode != 200) return null;
+      return ((jsonDecode(r.body) as Map<String, dynamic>)['tiles'] as Map)
+          .cast<String, dynamic>();
+    } catch (_) {
+      return null;
+    }
+  }();
+  final index = await _railIndex;
+  if (index == null) return null;
+  final keys = <String>{
+    for (final f in fixes)
+      for (var dy = -1; dy <= 1; dy++)
+        for (var dx = -1; dx <= 1; dx++)
+          RailNetwork.tileOf(f.lat + dy, f.lng + dx),
+  }.where(index.containsKey);
+  final parts = <RailNetwork>[];
+  for (final k in keys) {
+    final net = await (_railTiles[k] ??= () async {
+      try {
+        final r = await http.get(Uri.base.resolve('rail/tiles/$k.json'));
+        return r.statusCode == 200 ? RailNetwork.parse(r.body) : null;
+      } catch (_) {
+        return null;
+      }
+    }());
+    if (net != null) parts.add(net);
   }
-}();
+  return parts.isEmpty ? null : RailNetwork.merge(parts);
+}
