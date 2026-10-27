@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 
+import 'activity_style.dart';
 import 'config.dart';
 import 'day_analysis.dart';
 import 'firestore_api.dart';
@@ -500,7 +501,35 @@ class _ViewerPageState extends State<ViewerPage> {
             ].join(' · '),
             style: TextStyle(color: Colors.grey.shade400, fontSize: 11.5),
           ),
+          // Distance by activity; the colours are the route's.
+          if (day.metersByActivity.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final e in day.metersByActivity)
+                  if (e.value >= 10) _activityChip(e.key, e.value),
+              ],
+            ),
+          ],
         ],
+      ),
+    );
+  }
+
+  Widget _activityChip(String activity, double meters) {
+    final s = activityStyle(activity);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: s.color.withValues(alpha: .18),
+        border: Border.all(color: s.color.withValues(alpha: .7)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        '${s.emoji} ${s.name} ${_km(meters)}',
+        style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -680,8 +709,8 @@ class _ViewerPageState extends State<ViewerPage> {
         '${_dur(it.duration)} · ${it.points} fixes within ${kStopRadius.round()} m, not counted as travel',
       ),
       ItemKind.trip => (
-        '🚗 trip',
-        Colors.greenAccent.shade400,
+        '${activityStyle(it.activity).emoji} ${activityStyle(it.activity).name}',
+        activityStyle(it.activity).color,
         '${_km(it.meters)} in ${_dur(it.duration)} · ${it.points} points',
       ),
       ItemKind.gap => (
@@ -794,7 +823,9 @@ class _ViewerPageState extends State<ViewerPage> {
                 Expanded(
                   child: Text(
                     '${f.lat.toStringAsFixed(6)}, ${f.lng.toStringAsFixed(6)} · ±${f.accuracy.toStringAsFixed(0)} m'
-                    ' · ${f.source.isEmpty ? '?' : f.source} · activity ${f.activity.isEmpty ? '?' : f.activity}'
+                    ' · ${f.source.isEmpty ? '?' : f.source}'
+                    ' · ${activityStyle(f.activity).emoji} ${f.activity}'
+                    '${f.activityConfidence.isEmpty ? '' : ' (${f.activityConfidence}${f.activitySource == 'sensor' || f.activitySource.isEmpty ? '' : ', ${f.activitySource}'})'}'
                     ' · $kmh${f.shiftId.isEmpty ? '' : ' · ${f.shiftId}'}',
                     style: TextStyle(
                       color: Colors.grey.shade300,

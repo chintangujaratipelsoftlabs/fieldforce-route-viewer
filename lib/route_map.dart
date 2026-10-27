@@ -4,13 +4,13 @@ import 'package:google_maps_flutter/google_maps_flutter.dart' as gm;
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart' as ll;
 
+import 'activity_style.dart';
 import 'config.dart';
 import 'day_analysis.dart';
 import 'firestore_api.dart';
 
 final _hm = DateFormat('HH:mm');
 
-const _route = Color(0xFF2F6FED);
 const _gap = Color(0xFFE5484D); // no locations
 const _missed = Color(0xFFF5A524); // points missed on the way
 const _start = Color(0xFF30A46C);
@@ -156,15 +156,18 @@ class _GoogleRouteMapState extends State<_GoogleRouteMap> {
     final markers = <gm.Marker>{};
     final circles = <gm.Circle>{};
     if (day != null && day.fixes.isNotEmpty) {
+      // Coloured by activity (in vehicle, walking, …).
       for (final (i, seg) in day.segments.indexed) {
-        polylines.add(
-          gm.Polyline(
-            polylineId: gm.PolylineId('seg$i'),
-            points: [for (final f in seg) _p(f)],
-            color: _route,
-            width: 5,
-          ),
-        );
+        for (final (j, (activity, run)) in DayAnalysis.activityRuns(seg).indexed) {
+          polylines.add(
+            gm.Polyline(
+              polylineId: gm.PolylineId('seg$i-$j'),
+              points: [for (final f in run) _p(f)],
+              color: activityStyle(activity).color,
+              width: 5,
+            ),
+          );
+        }
       }
       for (final (i, g) in day.gapLines.indexed) {
         polylines.add(
@@ -202,7 +205,7 @@ class _GoogleRouteMapState extends State<_GoogleRouteMap> {
               radius: 3,
               strokeWidth: 1,
               strokeColor: Colors.white,
-              fillColor: f.mock ? Colors.orange : _route,
+              fillColor: f.mock ? Colors.orange : activityStyle(f.activity).color,
             ),
           );
         }
@@ -359,12 +362,14 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
         if (has)
           fm.PolylineLayer(
             polylines: [
+              // Coloured by activity (in vehicle, walking, …).
               for (final seg in day.segments)
-                fm.Polyline(
-                  points: [for (final f in seg) _p(f)],
-                  color: _route,
-                  strokeWidth: 5,
-                ),
+                for (final (activity, run) in DayAnalysis.activityRuns(seg))
+                  fm.Polyline(
+                    points: [for (final f in run) _p(f)],
+                    color: activityStyle(activity).color,
+                    strokeWidth: 5,
+                  ),
             ],
           ),
         // Not recorded: small dotted lines. Hover shows the reason, click pins it.
@@ -428,7 +433,7 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
                 fm.CircleMarker(
                   point: _p(f),
                   radius: 3.5,
-                  color: f.mock ? Colors.orange : _route,
+                  color: f.mock ? Colors.orange : activityStyle(f.activity).color,
                   borderColor: Colors.white,
                   borderStrokeWidth: 1,
                 ),

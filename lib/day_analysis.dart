@@ -128,6 +128,7 @@ class DayItem {
     this.kind,
     this.start,
     this.end, {
+    this.activity,
     this.meters = 0,
     this.points = 0,
     this.lat,
@@ -140,6 +141,9 @@ class DayItem {
   final DateTime start;
   final DateTime end;
   final double meters;
+
+  /// Trips: the activity covering most of the distance (IN_VEHICLE, …).
+  final String? activity;
   final int points;
 
   /// Stop centre.
@@ -192,6 +196,41 @@ class DayAnalysis {
   }
 
   int get missedCount => gapLines.where((g) => !g.noLocations).length;
+
+  /// Distance between stored points by activity (each hop counts for the
+  /// activity at its end), largest first. Gaps are not included.
+  List<MapEntry<String, double>> get metersByActivity {
+    final by = <String, double>{};
+    for (final seg in segments) {
+      for (var k = 1; k < seg.length; k++) {
+        by[seg[k].activity] =
+            (by[seg[k].activity] ?? 0) + meters(seg[k - 1], seg[k]);
+      }
+    }
+    return by.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  }
+
+  /// A segment split into runs of one activity (for colouring the route);
+  /// consecutive runs share their joining point.
+  static List<(String, List<Fix>)> activityRuns(List<Fix> seg) {
+    final out = <(String, List<Fix>)>[];
+    for (var k = 0; k < seg.length; k++) {
+      final a = k == 0 ? (seg.length > 1 ? seg[1].activity : seg[0].activity) : seg[k].activity;
+      if (out.isEmpty || out.last.$1 != a) {
+        out.add((a, [if (k > 0) seg[k - 1], seg[k]]));
+      } else {
+        out.last.$2.add(seg[k]);
+      }
+    }
+    return out;
+  }
+
+  static String? _dominant(Map<String, double> by) {
+    final known = by.entries.where((e) => e.key != 'UNKNOWN').toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    if (known.isNotEmpty) return known.first.key;
+    return by.isEmpty ? null : 'UNKNOWN';
+  }
 
   /// Time spent on trips (moving), not at stops.
   Duration get movingTime => items
@@ -311,13 +350,17 @@ class DayAnalysis {
 
   static DayItem _trip(List<Fix> run, int from, int to) {
     var m = 0.0;
+    final by = <String, double>{};
     for (var k = from + 1; k <= to; k++) {
-      m += meters(run[k - 1], run[k]);
+      final d = meters(run[k - 1], run[k]);
+      m += d;
+      by[run[k].activity] = (by[run[k].activity] ?? 0) + d;
     }
     return DayItem(
       ItemKind.trip,
       run[from].time,
       run[to].time,
+      activity: _dominant(by),
       meters: m,
       points: to - from + 1,
     );

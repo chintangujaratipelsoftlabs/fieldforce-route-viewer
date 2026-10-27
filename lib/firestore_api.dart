@@ -33,6 +33,8 @@ class Fix {
     required this.speed,
     required this.source,
     required this.activity,
+    this.activityConfidence = '',
+    this.activitySource = '',
     required this.mock,
     required this.shiftId,
   });
@@ -43,7 +45,13 @@ class Fix {
   final double accuracy;
   final double speed;
   final String source;
+  /// IN_VEHICLE, ON_BICYCLE, ON_FOOT, RUNNING, STILL, WALKING or UNKNOWN.
   final String activity;
+
+  /// high / medium / low, and where the activity came from: sensor, recent
+  /// (last activity change), speed (inferred), none. Empty for old points.
+  final String activityConfidence;
+  final String activitySource;
   final bool mock;
   final String shiftId;
 }
@@ -65,6 +73,19 @@ class Estimate {
   final double sigma;
   final String? station;
 }
+
+/// Android activity name for a stored value: new points store
+/// `activityType` (IN_VEHICLE), older ones only Tracelet's name (inVehicle).
+String activityLabelOf(String v) => switch (v) {
+  'inVehicle' || 'IN_VEHICLE' => 'IN_VEHICLE',
+  'onBicycle' || 'ON_BICYCLE' => 'ON_BICYCLE',
+  'onFoot' || 'ON_FOOT' => 'ON_FOOT',
+  'running' || 'RUNNING' => 'RUNNING',
+  'still' || 'STILL' => 'STILL',
+  'walking' || 'WALKING' => 'WALKING',
+  'tilting' || 'TILTING' => 'TILTING',
+  _ => 'UNKNOWN',
+};
 
 /// Who is signed in to the viewer.
 class Session {
@@ -247,6 +268,14 @@ class FirestoreApi {
       final lat = (f['latitude'] as num?)?.toDouble();
       final lng = (f['longitude'] as num?)?.toDouble();
       if (t == null || lat == null || lng == null) continue;
+      final speed = (f['speed'] as num?)?.toDouble() ?? 0;
+      // Points stored before the app filled in missing activities: faster
+      // than 18 km/h is a vehicle (as the app does now).
+      var activity = activityLabelOf(
+        (f['activityType'] ?? f['activity'] ?? '').toString(),
+      );
+      final inferred = activity == 'UNKNOWN' && speed >= 5;
+      if (inferred) activity = 'IN_VEHICLE';
       out.add(
         Fix(
           time: t.toLocal(),
@@ -255,7 +284,13 @@ class FirestoreApi {
           accuracy: (f['accuracy'] as num?)?.toDouble() ?? 0,
           speed: (f['speed'] as num?)?.toDouble() ?? 0,
           source: (f['source'] ?? '').toString(),
-          activity: (f['activity'] ?? '').toString(),
+          activity: activity,
+          activityConfidence: inferred
+              ? 'low'
+              : (f['activityConfidence'] ?? '').toString(),
+          activitySource: inferred
+              ? 'speed'
+              : (f['activitySource'] ?? '').toString(),
           mock: f['isMock'] == true,
           shiftId: (f['shiftId'] ?? '').toString(),
         ),
