@@ -12,8 +12,11 @@ const Duration kStopMinDuration = Duration(minutes: 5);
 const Duration kGapMin = Duration(minutes: 10);
 
 /// Consecutive points further apart than this (the app stores one every
-/// ~20 m while moving): the route in between was not recorded.
+/// ~20 m while moving) and at least [kMissTime] apart: the route in between
+/// was not recorded. Quicker hops are only sparse points while driving (some
+/// phones deliver a fix every 5-8 s, 70-120 m apart at 45 km/h).
 const double kMissMeters = 100;
+const Duration kMissTime = Duration(seconds: 30);
 
 /// Faster than this between two points is a GPS jump, not driving
 /// (expressways reach 160 km/h).
@@ -276,13 +279,15 @@ class DayAnalysis {
     RailNetwork? rail,
     List<Estimate> estimates = const [],
   }) {
+    fixes = startFixesDropped(fixes);
     final segments = <List<Fix>>[];
     final gapLines = <GapLine>[];
     var run = <Fix>[];
     for (final f in fixes) {
       if (run.isNotEmpty) {
         final noLocations = f.time.difference(run.last.time) > kGapMin;
-        final missed = meters(run.last, f) > kMissMeters;
+        final missed = meters(run.last, f) > kMissMeters &&
+            f.time.difference(run.last.time) >= kMissTime;
         if (noLocations || missed) {
           gapLines.add(GapLine(run.last, f, noLocations, rail));
           segments.add(run);
@@ -364,6 +369,50 @@ class DayAnalysis {
       meters: m,
       points: to - from + 1,
     );
+  }
+
+  /// Drops the fixes the app (27 Oct build on) no longer counts or stores,
+  /// so older days add up the same way:
+  ///
+  /// * a coarse first fix of a shift (worse than 25 m: Wi-Fi / cell before
+  ///   GPS locked, seen 260 m off) when a good fix follows within 60 s;
+  /// * GPS jumps: within 10 s of the previous fix, it lies faster than the
+  ///   phone's own speed allows (over 5 m/s + 2.5 x the higher speed of the
+  ///   two fixes): wobble while parked, or 170 m the wrong way at 150 km/h
+  ///   while the phone said 30 km/h;
+  /// * out-and-back jumps: a fix worse than 15 m that lies over 100 m from
+  ///   the fixes before and after it while those two are close together
+  ///   (seen at duty off: 22 m and 36 m Wi-Fi-like fixes 250 m away from
+  ///   the parked agent). Precise fixes are kept: laps of a garden look the
+  ///   same when the app stored few points.
+  static List<Fix> startFixesDropped(List<Fix> fixes) {
+    final out = <Fix>[];
+    for (var k = 0; k < fixes.length; k++) {
+      final f = fixes[k];
+      final prev = out.isEmpty ? null : out.last;
+      final first = prev == null || prev.shiftId != f.shiftId;
+      if (first && f.accuracy > 25) {
+        final locks = fixes.skip(k + 1).takeWhile(
+              (g) => g.shiftId == f.shiftId &&
+                  g.time.difference(f.time) <= const Duration(seconds: 60),
+            );
+        if (locks.any((g) => g.accuracy > 0 && g.accuracy <= 25)) continue;
+      }
+      if (!first && f.speed >= 0) {
+        final dt = f.time.difference(prev.time).inMilliseconds / 1000;
+        final allowed = 5 + 2.5 * math.max(f.speed, math.max(prev.speed, 0));
+        if (dt > 0 && dt <= 10 && meters(prev, f) / dt > allowed) continue;
+      }
+      out.add(f);
+    }
+    for (var k = out.length - 2; k >= 1; k--) {
+      final a = out[k - 1], f = out[k], b = out[k + 1];
+      final away = math.min(meters(a, f), meters(f, b));
+      if (f.accuracy > 15 && away > 100 && meters(a, b) < 0.4 * away) {
+        out.removeAt(k);
+      }
+    }
+    return out;
   }
 
   static double meters(Fix a, Fix b) {

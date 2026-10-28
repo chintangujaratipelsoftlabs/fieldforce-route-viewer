@@ -269,12 +269,17 @@ class FirestoreApi {
       final lng = (f['longitude'] as num?)?.toDouble();
       if (t == null || lat == null || lng == null) continue;
       final speed = (f['speed'] as num?)?.toDouble() ?? 0;
-      // Points stored before the app filled in missing activities: faster
-      // than 18 km/h is a vehicle (as the app does now).
+      // Points stored before the app filled in missing activities, or with
+      // an activity GPS speed rules out (STILL at 43 km/h for a whole drive):
+      // a vehicle, as the app does now.
       var activity = activityLabelOf(
         (f['activityType'] ?? f['activity'] ?? '').toString(),
       );
-      final inferred = activity == 'UNKNOWN' && speed >= 5;
+      final inferred = switch (activity) {
+        'UNKNOWN' || 'STILL' => speed >= 5,
+        'WALKING' || 'ON_FOOT' || 'RUNNING' => speed >= 7,
+        _ => false,
+      };
       if (inferred) activity = 'IN_VEHICLE';
       out.add(
         Fix(
