@@ -78,6 +78,9 @@ class GapLine {
     return meters >= 300 && kmh >= 5;
   }
 
+  /// Duty was off in between (different shifts): not a tracking fault.
+  bool get offDuty => !_sameShift(from, to);
+
   static bool _sameShift(Fix a, Fix b) =>
       a.shiftId.isEmpty || b.shiftId.isEmpty || a.shiftId == b.shiftId;
 
@@ -164,7 +167,8 @@ class DayItem {
 
 class DayAnalysis {
   DayAnalysis(this.fixes, this.items, this.segments, this.gapLines,
-      [this.estimates = const []]);
+      [this.estimates = const []])
+    : lines = [for (final s in segments) _stillStopsCollapsed(s)];
 
   final List<Fix> fixes;
 
@@ -174,6 +178,11 @@ class DayAnalysis {
 
   /// Runs of fixes without a gap, drawn as solid lines.
   final List<List<Fix>> segments;
+
+  /// [segments] as drawn and measured: each stop where the phone sat still
+  /// is one point (its middle fix), so GPS drift there (a few metres, up to
+  /// ~15 m indoors) is neither drawn as a scribble nor added as distance.
+  final List<List<Fix>> lines;
 
   /// Where the route was not recorded: drawn dotted.
   final List<GapLine> gapLines;
@@ -187,7 +196,7 @@ class DayAnalysis {
   /// positions only, so this matches the distance the phone counted.
   double get travelledMeters {
     var m = 0.0;
-    for (final seg in segments) {
+    for (final seg in lines) {
       for (var k = 1; k < seg.length; k++) {
         m += meters(seg[k - 1], seg[k]);
       }
@@ -204,7 +213,7 @@ class DayAnalysis {
   /// activity at its end), largest first. Gaps are not included.
   List<MapEntry<String, double>> get metersByActivity {
     final by = <String, double>{};
-    for (final seg in segments) {
+    for (final seg in lines) {
       for (var k = 1; k < seg.length; k++) {
         by[seg[k].activity] =
             (by[seg[k].activity] ?? 0) + meters(seg[k - 1], seg[k]);
@@ -349,6 +358,43 @@ class DayAnalysis {
     }
     if (run.length - 1 > tripStart) {
       out.add(_trip(run, tripStart, run.length - 1));
+    }
+    return out;
+  }
+
+  /// Activities of a phone that is not moving.
+  static const _stillActivities = {'STILL', 'UNKNOWN', 'TILTING'};
+
+  /// Share of a stop's points that must say still before it is drawn as one
+  /// point. Stops where the agent kept walking (laps of a garden, a shop
+  /// floor) stay drawn in full.
+  static const kStillShare = 0.6;
+
+  /// [run] with each still stop (within [kStopRadius] for at least
+  /// [kStopMinDuration], mostly still points) replaced by its middle fix.
+  static List<Fix> _stillStopsCollapsed(List<Fix> run) {
+    final out = <Fix>[];
+    var i = 0;
+    while (i < run.length) {
+      var j = i;
+      while (j + 1 < run.length && meters(run[i], run[j + 1]) <= kStopRadius) {
+        j++;
+      }
+      final pts = run.sublist(i, j + 1);
+      final still =
+          pts.where((p) => _stillActivities.contains(p.activity)).length;
+      if (j > i &&
+          run[j].time.difference(run[i].time) >= kStopMinDuration &&
+          still >= kStillShare * pts.length) {
+        final lat = pts.map((p) => p.lat).reduce((a, b) => a + b) / pts.length;
+        final lng = pts.map((p) => p.lng).reduce((a, b) => a + b) / pts.length;
+        double off(Fix p) => (p.lat - lat).abs() + (p.lng - lng).abs();
+        out.add(pts.reduce((a, b) => off(a) <= off(b) ? a : b));
+        i = j + 1;
+      } else {
+        out.add(run[i]);
+        i++;
+      }
     }
     return out;
   }

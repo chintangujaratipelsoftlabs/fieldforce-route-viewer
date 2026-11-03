@@ -16,6 +16,13 @@ const _missed = Color(0xFFF5A524); // points missed on the way
 const _start = Color(0xFF30A46C);
 const _end = Color(0xFFE5484D);
 const _stop = Color(0xFF12A594);
+const _offDuty = Color(0xFF8B8D98); // duty off in between: not a fault
+
+Color _gapColor(GapLine g) =>
+    g.offDuty ? _offDuty : (g.noLocations ? _gap : _missed);
+
+/// Closer than this, a few metres of GPS drift fill the screen.
+const double kMaxZoom = 19;
 
 /// Title shown at the middle of a dotted (not recorded) stretch.
 String gapTitle(GapLine g) {
@@ -24,6 +31,7 @@ String gapTitle(GapLine g) {
   final t = g.duration.inMinutes > 0
       ? '${g.duration.inMinutes} min'
       : '${g.duration.inSeconds} s';
+  if (g.offDuty) return 'Duty off · $t';
   return g.noLocations ? 'No locations · $t · $d' : 'Route missed · $d in $t';
 }
 
@@ -157,7 +165,7 @@ class _GoogleRouteMapState extends State<_GoogleRouteMap> {
     final circles = <gm.Circle>{};
     if (day != null && day.fixes.isNotEmpty) {
       // Coloured by activity (in vehicle, walking, …).
-      for (final (i, seg) in day.segments.indexed) {
+      for (final (i, seg) in day.lines.indexed) {
         for (final (j, (activity, run)) in DayAnalysis.activityRuns(seg).indexed) {
           polylines.add(
             gm.Polyline(
@@ -174,7 +182,7 @@ class _GoogleRouteMapState extends State<_GoogleRouteMap> {
           gm.Polyline(
             polylineId: gm.PolylineId('gap$i'),
             points: [for (final (a, b) in g.path) gm.LatLng(a, b)],
-            color: g.noLocations ? _gap : _missed,
+            color: _gapColor(g),
             width: 4,
             jointType: gm.JointType.round,
             patterns: [gm.PatternItem.dot, gm.PatternItem.gap(8)],
@@ -270,6 +278,7 @@ class _GoogleRouteMapState extends State<_GoogleRouteMap> {
       polylines: polylines,
       markers: markers,
       circles: circles,
+      minMaxZoomPreference: const gm.MinMaxZoomPreference(null, kMaxZoom),
       zoomControlsEnabled: true,
       onMapCreated: (c) {
         _map = c;
@@ -349,6 +358,7 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
       options: fm.MapOptions(
         initialCenter: const ll.LatLng(22.5, 79),
         initialZoom: 5,
+        maxZoom: kMaxZoom,
         onMapReady: () {
           _ready = true;
           _fit();
@@ -363,7 +373,7 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
           fm.PolylineLayer(
             polylines: [
               // Coloured by activity (in vehicle, walking, …).
-              for (final seg in day.segments)
+              for (final seg in day.lines)
                 for (final (activity, run) in DayAnalysis.activityRuns(seg))
                   fm.Polyline(
                     points: [for (final f in run) _p(f)],
@@ -401,7 +411,7 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
                   for (final g in day.gapLines)
                     fm.Polyline(
                       points: [for (final (a, b) in g.path) ll.LatLng(a, b)],
-                      color: g.noLocations ? _gap : _missed,
+                      color: _gapColor(g),
                       strokeWidth: 3.5,
                       pattern: const fm.StrokePattern.dotted(spacingFactor: 2),
                       hitValue: g,
@@ -420,7 +430,7 @@ class _OsmRouteMapState extends State<_OsmRouteMap> {
                     g.path[g.path.length ~/ 2].$2,
                   ),
                   radius: 4,
-                  color: g.noLocations ? _gap : _missed,
+                  color: _gapColor(g),
                   borderColor: Colors.white,
                   borderStrokeWidth: 1.5,
                 ),
@@ -514,7 +524,7 @@ class GapReasonCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = gap.noLocations ? _gap : _missed;
+    final color = _gapColor(gap);
     final times = '${_hm.format(gap.from.time)} → ${_hm.format(gap.to.time)}';
     return Material(
       color: const Color(0xF215181B),
